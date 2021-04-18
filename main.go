@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -15,7 +16,7 @@ import (
 var (
 	containerName = flag.String("container", "", "Name or ID of the container to monitor")
 	outputFormat  = flag.String("output-format", "json", "Output format: json | csv")
-	interval      = flag.Int("interval", 10, "collection interval (in seconds)")
+	interval      = flag.Int("interval", 5, "collection interval (in seconds)")
 
 	previousTotalUsage uint64
 	previousTime       time.Time
@@ -40,17 +41,30 @@ func main() {
 	previousTotalUsage = stats.CPUStats.CPUUsage.TotalUsage
 	previousTime = start
 	ticker := time.NewTicker(time.Duration(*interval) * time.Second)
-	if *outputFormat == "csv" {
-		fmt.Println("ts,timeElapsed,cpuTimeElapsed,percentCPUSinceStart,percentCPUThisInterval,memoryUsageKiB")
+
+	containerStats := func(f *os.File) {
+		for range ticker.C {
+			stats = getStats(cli)
+			now := time.Now()
+			elapsed := now.Sub(start)
+			intervalElapsed := now.Sub(previousTime)
+			printStats(stats, now, elapsed, intervalElapsed, startUsage, f)
+			previousTotalUsage = stats.CPUStats.CPUUsage.TotalUsage
+			previousTime = now
+		}
 	}
-	for range ticker.C {
-		stats = getStats(cli)
-		now := time.Now()
-		elapsed := now.Sub(start)
-		intervalElapsed := now.Sub(previousTime)
-		printStats(stats, now, elapsed, intervalElapsed, startUsage)
-		previousTotalUsage = stats.CPUStats.CPUUsage.TotalUsage
-		previousTime = now
+
+	if *outputFormat == "csv" {
+		f, _ := os.Create("./stats.csv")
+		defer f.Close()
+		fmt.Println("ts,timeElapsed,cpuTimeElapsed,percentCPUSinceStart,percentCPUThisInterval,memoryUsageKiB")
+		fmt.Fprintf(f, "ts,timeElapsed,cpuTimeElapsed,percentCPUSinceStart,percentCPUThisInterval,memoryUsageKiB")
+		fmt.Fprintf(f, "\n")
+		containerStats(f)
+	} else {
+		f, _ := os.Create("./stats.json")
+		defer f.Close()
+		containerStats(f)
 	}
 }
 
@@ -74,7 +88,7 @@ func getStats(cli *client.Client) *types.StatsJSON {
 	return stats
 }
 
-func printStats(stats *types.StatsJSON, now time.Time, elapsed time.Duration, intervalElapsed time.Duration, startUsage uint64) {
+func printStats(stats *types.StatsJSON, now time.Time, elapsed time.Duration, intervalElapsed time.Duration, startUsage uint64, f *os.File) {
 	ts := now.UTC().Format(time.RFC3339)
 	timeElapsed := elapsed.Seconds()
 	// cpu time in seconds
@@ -92,6 +106,14 @@ func printStats(stats *types.StatsJSON, now time.Time, elapsed time.Duration, in
 			percentCPUSinceStart,
 			percentCPUThisInterval,
 			float64(stats.MemoryStats.Usage)/1024)
+		fmt.Fprintf(f, "%s,%.2f,%.2f,%.2f,%.2f,%.1f\n",
+			ts,
+			timeElapsed,
+			cpuTimeElapsed,
+			percentCPUSinceStart,
+			percentCPUThisInterval,
+			float64(stats.MemoryStats.Usage)/1024)
+
 	} else {
 		// json
 		fmt.Printf(`{"ts":"%s","timeElapsed":%.2f,"cpuTimeElapsed":%.2f,"percentCPUSinceStart":%.2f,"percentCPUThisInterval":%.2f,"memoryUsageKiB":%.1f}`,
@@ -101,6 +123,14 @@ func printStats(stats *types.StatsJSON, now time.Time, elapsed time.Duration, in
 			percentCPUSinceStart,
 			percentCPUThisInterval,
 			float64(stats.MemoryStats.Usage)/1024)
+		fmt.Fprintf(f, `{"ts":"%s","timeElapsed":%.2f,"cpuTimeElapsed":%.2f,"percentCPUSinceStart":%.2f,"percentCPUThisInterval":%.2f,"memoryUsageKiB":%.1f}`,
+			ts,
+			timeElapsed,
+			cpuTimeElapsed,
+			percentCPUSinceStart,
+			percentCPUThisInterval,
+			float64(stats.MemoryStats.Usage)/1024)
+		fmt.Fprintf(f, "\n")
 		fmt.Println()
 	}
 }
